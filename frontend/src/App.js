@@ -13,7 +13,7 @@ import {
 
 const API_BASE = "http://localhost:5000";
 
-// Coins supported by your backend
+// Supported coins
 const SUPPORTED_COINS = [
   { symbol: "BTC", name: "Bitcoin" },
   { symbol: "ETH", name: "Ethereum" },
@@ -24,7 +24,7 @@ const SUPPORTED_COINS = [
   { symbol: "DOGE", name: "Dogecoin" },
 ];
 
-// Helper: compute holdings per symbol from trade history
+// Holdings calculator
 function computeHoldings(trades) {
   const map = {};
   for (const t of trades) {
@@ -40,20 +40,44 @@ function App() {
   const [priceData, setPriceData] = useState(null);
   const [status, setStatus] = useState("");
   const [ai, setAi] = useState(null);
-  const [balance, setBalance] = useState(100000); // demo balance
+  const [balance, setBalance] = useState(100000);
 
   const [quantity, setQuantity] = useState(1);
   const [trades, setTrades] = useState([]);
   const [chartData, setChartData] = useState([]);
   const [holdings, setHoldings] = useState({});
 
-  // 1. Fetch trades on mount
+  // NEW: Wallet connection state
+  const [walletAddress, setWalletAddress] = useState(null);
+
+  // Connect Wallet
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      return alert("MetaMask not found. Install it to continue.");
+    }
+
+    try {
+      const accounts = await window.ethereum.request({
+        method: "eth_requestAccounts",
+      });
+
+      setWalletAddress(accounts[0]);
+      console.log("Wallet connected:", accounts[0]);
+    } catch (err) {
+      console.error("Wallet connection failed", err);
+    }
+  };
+
+  // Show shortened address
+  const formatAddress = (addr) =>
+    addr ? addr.slice(0, 6) + "..." + addr.slice(-4) : "";
+
+  // 1. Load trades on mount
   useEffect(() => {
     const fetchTrades = async () => {
       try {
         const res = await axios.get(`${API_BASE}/trades`);
         setTrades(res.data);
-        // Note: holdings will be updated by the effect below
       } catch (err) {
         console.error("Failed to load trades", err);
       }
@@ -61,8 +85,7 @@ function App() {
     fetchTrades();
   }, []);
 
-  // 2. Auto-recalculate holdings whenever trades change
-  // This prevents calculation errors and removes duplicate logic
+  // 2. Recalculate holdings
   useEffect(() => {
     setHoldings(computeHoldings(trades));
   }, [trades]);
@@ -73,8 +96,7 @@ function App() {
     try {
       const res = await axios.get(`${API_BASE}/`);
       setStatus(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch {
       setStatus("Error connecting to backend");
     }
   };
@@ -88,15 +110,12 @@ function App() {
       const res = await axios.get(`${API_BASE}/price/${symbol}`);
       setPriceData(res.data);
 
-      // --- create synthetic intraday data for chart (demo) ---
       const base = res.data.price;
-      const points = Array.from({ length: 40 }).map((_, i) => {
-        const variation = (Math.random() - 0.5) * 0.02 * base; // ±2%
-        return {
-          index: i,
-          price: Number((base + variation).toFixed(2)),
-        };
-      });
+      const points = Array.from({ length: 40 }).map((_, i) => ({
+        index: i,
+        price: Number((base + (Math.random() - 0.5) * 0.02 * base).toFixed(2)),
+      }));
+
       setChartData(points);
     } catch (err) {
       console.error(err);
@@ -112,55 +131,41 @@ function App() {
         price: priceData.price,
       });
       setAi(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch {
       alert("Could not fetch AI advice");
     }
   };
 
-  const handleSymbolChange = (e) => {
-    setSymbol(e.target.value);
-  };
-
-  // --- FIXED PLACE TRADE FUNCTION ---
   const placeTrade = async (side) => {
     if (!priceData) return alert("Fetch price first!");
-    if (!quantity || quantity <= 0) return alert("Enter a valid quantity");
+    if (!quantity || quantity <= 0) return alert("Enter valid quantity");
 
     const sym = priceData.symbol;
     const tradeValue = quantity * priceData.price;
     const currentHolding = holdings[sym] || 0;
 
-    // 1) Balance check for BUY
-    if (side === "BUY" && balance < tradeValue) {
-      return alert("Not enough demo balance for this trade");
-    }
+    if (side === "BUY" && balance < tradeValue)
+      return alert("Not enough demo balance");
 
-    // 2) Holding check for SELL
-    if (side === "SELL" && quantity > currentHolding) {
-      return alert(`You only have ${currentHolding} ${sym} in storage`);
-    }
+    if (side === "SELL" && quantity > currentHolding)
+      return alert(`You only have ${currentHolding} ${sym}`);
 
     try {
       const res = await axios.post(`${API_BASE}/trade`, {
         symbol: sym,
-        side, // "BUY" or "SELL"
+        side,
         quantity,
         price: priceData.price,
       });
 
-      // 3) Update demo balance
       setBalance((prev) =>
         side === "BUY" ? prev - tradeValue : prev + tradeValue
       );
 
-      // 4) Update trades
-      // The useEffect above will detect this change and auto-update holdings
       setTrades((prev) => [res.data, ...prev]);
 
       alert(`${side} order placed!`);
-    } catch (err) {
-      console.error("Trade failed:", err);
+    } catch {
       alert("Trade failed");
     }
   };
@@ -180,10 +185,7 @@ function App() {
         <div className="sidebar-balance">
           <div className="sidebar-balance-label">Demo balance</div>
           <div className="sidebar-balance-value">
-            $
-            {balance.toLocaleString(undefined, {
-              maximumFractionDigits: 2,
-            })}
+            ${balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
           </div>
           <div className="sidebar-balance-tag">Virtual trading only</div>
         </div>
@@ -218,7 +220,7 @@ function App() {
         </div>
       </aside>
 
-      {/* ===== Main content ===== */}
+      {/* ===== Main Content ===== */}
       <main className="main-content">
         {/* Top bar */}
         <header className="topbar">
@@ -227,10 +229,12 @@ function App() {
               Trading dashboard
               <span className="topbar-pill">Multi‑layer AI protection</span>
             </div>
+
             <div className="topbar-subtitle">
               FTSO price + on‑chain + sentiment fused into one protective
               cockpit.
             </div>
+
             <div
               style={{
                 marginTop: 6,
@@ -239,36 +243,49 @@ function App() {
               }}
             >
               🔗 Network: <b>Flare Coston2 Testnet (FTSO)</b> · 💸 Mode:{" "}
-              <b>Simulation only (no real funds)</b>
+              <b>Simulation only</b>
             </div>
           </div>
 
+          {/* -------- TOP RIGHT BUTTONS (Wallet Connect Added Here!) -------- */}
           <div className="topbar-actions">
+            {walletAddress ? (
+              <div className="wallet-connected">
+                {formatAddress(walletAddress)}
+              </div>
+            ) : (
+              <button className="topbar-btn primary" onClick={connectWallet}>
+                Connect Wallet
+              </button>
+            )}
+
             <button className="topbar-btn ghost">Log in</button>
             <button className="topbar-btn primary">Sign up</button>
           </div>
         </header>
 
-        {/* Grid: chart + trade panel */}
+        {/* ===== Chart + Trade Panel Grid ===== */}
         <div className="main-grid">
-          {/* ===== Chart + history section ===== */}
+          {/* LEFT SIDE — chart + history */}
           <section className="chart-section">
-            {/* Asset bar */}
             <div className="asset-bar">
               <div className="asset-bar-left">
                 <select
                   value={symbol}
-                  onChange={handleSymbolChange}
+                  onChange={(e) => setSymbol(e.target.value)}
                   className="asset-dropdown"
                 >
-                  {SUPPORTED_COINS.map((coin) => (
-                    <option key={coin.symbol} value={coin.symbol}>
-                      {coin.name} ({coin.symbol})
+                  {SUPPORTED_COINS.map((c) => (
+                    <option key={c.symbol} value={c.symbol}>
+                      {c.name} ({c.symbol})
                     </option>
                   ))}
                 </select>
+
                 {priceData && (
-                  <span className="asset-symbol-label">{priceData.symbol}</span>
+                  <span className="asset-symbol-label">
+                    {priceData.symbol}
+                  </span>
                 )}
               </div>
 
@@ -281,11 +298,9 @@ function App() {
             {priceData && (
               <div className="asset-strip">
                 <div className="asset-price">
-                  $
-                  {(priceData.price || 0).toLocaleString(undefined, {
-                    maximumFractionDigits: 2,
-                  })}
+                  ${priceData.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </div>
+
                 <div className="asset-metrics">
                   <div>
                     <span className="asset-metrics-label">24h Volume</span>
@@ -293,6 +308,7 @@ function App() {
                       ${(priceData.volume24h || 0).toLocaleString()}
                     </span>
                   </div>
+
                   <div>
                     <span className="asset-metrics-label">24h Change</span>
                     <span
@@ -304,17 +320,18 @@ function App() {
                       {(priceData.change24h || 0).toFixed(2)}%
                     </span>
                   </div>
+
                   <div>
                     <span className="asset-metrics-label">Source</span>
                     <span className="asset-metrics-value">
-                      {priceData.source || "FTSO / API"}
+                      {priceData.source}
                     </span>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Chart area */}
+            {/* Chart */}
             <div className="chart-wrapper">
               <div className="chart-card">
                 <div className="chart-toolbar">
@@ -327,21 +344,10 @@ function App() {
                 <div className="chart-placeholder">
                   {chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart
-                        data={chartData}
-                        margin={{
-                          top: 10,
-                          right: 10,
-                          left: 0,
-                          bottom: 0,
-                        }}
-                      >
+                      <LineChart data={chartData}>
                         <XAxis dataKey="index" hide />
                         <YAxis domain={["dataMin", "dataMax"]} hide />
-                        <Tooltip
-                          formatter={(value) => [`$${value}`, "Price"]}
-                          labelFormatter={() => ""}
-                        />
+                        <Tooltip formatter={(v) => [`$${v}`, "Price"]} />
                         <Line
                           type="monotone"
                           dataKey="price"
@@ -353,28 +359,25 @@ function App() {
                     </ResponsiveContainer>
                   ) : (
                     <div className="chart-empty-text">
-                      Select an asset and click <b>Refresh price</b> to load
-                      chart data.
+                      Click <b>Refresh price</b> to load chart data.
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* History */}
+            {/* Trade History */}
             <div className="history-panel">
               <div className="history-header-row">
                 <span className="history-title">Transaction history</span>
                 <span className="history-count-pill">
-                  {trades.length} trade
-                  {trades.length === 1 ? "" : "s"}
+                  {trades.length} trade{trades.length !== 1 ? "s" : ""}
                 </span>
               </div>
 
               {trades.length === 0 ? (
                 <p className="history-empty">
-                  No trades yet. Use BUY / SELL on the right to simulate
-                  positions.
+                  No trades yet. Use BUY / SELL to simulate.
                 </p>
               ) : (
                 <div className="history-table-wrapper">
@@ -389,24 +392,19 @@ function App() {
                         <th style={{ textAlign: "right" }}>Value ($)</th>
                       </tr>
                     </thead>
+
                     <tbody>
                       {trades.map((t) => (
-                        <tr className="history-row" key={t.id}>
+                        <tr key={t.id}>
                           <td>{new Date(t.timestamp).toLocaleString()}</td>
-                          <td
-                            className={"history-side " + (t.side || "")}
-                          >
-                            {t.side}
-                          </td>
+                          <td className={`history-side ${t.side}`}>{t.side}</td>
                           <td>{t.symbol}</td>
                           <td style={{ textAlign: "right" }}>{t.quantity}</td>
                           <td style={{ textAlign: "right" }}>
-                            {t.price?.toFixed ? t.price.toFixed(2) : t.price}
+                            {t.price.toFixed(2)}
                           </td>
                           <td style={{ textAlign: "right" }}>
-                            {t.valueUSD && t.valueUSD.toFixed
-                              ? t.valueUSD.toFixed(2)
-                              : t.valueUSD}
+                            {t.valueUSD.toFixed(2)}
                           </td>
                         </tr>
                       ))}
@@ -417,7 +415,7 @@ function App() {
             </div>
           </section>
 
-          {/* ===== Trade + AI panel ===== */}
+          {/* RIGHT SIDE — Trading + AI Panel */}
           <section className="trade-panel">
             <div className="trade-panel-header">
               <span className="trade-panel-title">Trade & AI protection</span>
@@ -427,14 +425,12 @@ function App() {
               </div>
             </div>
 
-            {/* Trade card */}
             <div className="trade-card">
               <div className="trade-label-row">
                 <span className="trade-label">Position size (units)</span>
-                <span className="trade-helper-text">
-                  Demo only – no real funds
-                </span>
+                <span className="trade-helper-text">Demo only</span>
               </div>
+
               <input
                 type="number"
                 className="trade-input"
@@ -447,10 +443,7 @@ function App() {
               <div className="trade-summary-row">
                 <span>Estimated value</span>
                 <span className="trade-summary-value">
-                  $
-                  {priceData
-                    ? (quantity * priceData.price).toFixed(2)
-                    : "0.00"}
+                  ${priceData ? (quantity * priceData.price).toFixed(2) : "0.00"}
                 </span>
               </div>
 
@@ -465,27 +458,27 @@ function App() {
               <div className="trade-buttons-row">
                 <button
                   className="trade-btn-buy"
-                  onClick={() => placeTrade("BUY")}
                   disabled={!priceData}
+                  onClick={() => placeTrade("BUY")}
                 >
                   Buy
                 </button>
+
                 <button
                   className="trade-btn-sell"
-                  onClick={() => placeTrade("SELL")}
                   disabled={!priceData}
+                  onClick={() => placeTrade("SELL")}
                 >
                   Sell
                 </button>
               </div>
             </div>
 
-            {/* AI card */}
             <div className="ai-card">
               <div className="ai-card-header">
                 <span className="ai-card-title">AI risk engine</span>
                 <span className="ai-card-tag">
-                  Price · on‑chain · sentiment
+                  Price · On-chain · Sentiment
                 </span>
               </div>
 
@@ -494,9 +487,7 @@ function App() {
                 onClick={getAISuggestion}
                 disabled={!priceData}
               >
-                {priceData
-                  ? "Analyze current setup"
-                  : "Fetch price to enable AI"}
+                {priceData ? "Analyze current setup" : "Fetch price first"}
               </button>
 
               {ai ? (
@@ -505,37 +496,36 @@ function App() {
                     <div className="ai-pill">
                       <div className="ai-pill-label">Whale inflow</div>
                       <div className="ai-pill-value">
-                        {ai.chain?.whaleInflow ?? 0}/100
+                        {ai.chain?.whaleInflow}/100
                       </div>
                     </div>
+
                     <div className="ai-pill">
                       <div className="ai-pill-label">Network stress</div>
                       <div className="ai-pill-value">
-                        {ai.chain?.networkStress ?? 0}/100
+                        {ai.chain?.networkStress}/100
                       </div>
                     </div>
+
                     <div className="ai-pill">
                       <div className="ai-pill-label">Sentiment score</div>
                       <div className="ai-pill-value">
-                        {ai.sentiment?.sentimentScore ?? 0}/100
+                        {ai.sentiment?.sentimentScore}/100
                       </div>
                     </div>
+
                     <div className="ai-pill">
                       <div className="ai-pill-label">FUD level</div>
                       <div className="ai-pill-value">
-                        {ai.sentiment?.fudLevel ?? 0}/100
+                        {ai.sentiment?.fudLevel}/100
                       </div>
                     </div>
                   </div>
 
                   <div className="ai-decision-row">
                     Decision:
-                    <span
-                      className={
-                        "ai-decision-badge " + (ai.ai?.action || "HOLD")
-                      }
-                    >
-                      {ai.ai?.action || "HOLD"}
+                    <span className={`ai-decision-badge ${ai.ai?.action}`}>
+                      {ai.ai?.action}
                     </span>
                   </div>
 
@@ -549,8 +539,7 @@ function App() {
                 </>
               ) : (
                 <p className="ai-placeholder-text">
-                  Run an analysis to see a transparent explanation of why the AI
-                  suggests BUY / SELL / HOLD.
+                  Run analysis to get BUY / SELL / HOLD recommendation.
                 </p>
               )}
             </div>
